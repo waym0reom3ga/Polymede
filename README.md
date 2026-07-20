@@ -4,7 +4,7 @@
 
 Polymede is a self-improving AI agent built **100% in Rust** from the ground up. It inherits the architectural DNA of the Autolycus ecosystem while shedding its Python dependency, rewriting every subsystem in a language chosen for safety, speed, and fearless concurrency.
 
-In Greek myth, the Polymedes were the wise nurses of Zeus — learned, all-knowing, the daughters of Themis (divine law). This agent is named for that legacy: a daughter of Autolycus, raised on hard-won lessons, designed to remember everything and do it right.
+In Greek myth, the Polymedes were the wise nurses of Zeus. Learned, all-knowing, the daughters of Themis (divine law). This agent is named for that legacy: a daughter of Autolycus, raised on hard-won lessons, designed to remember everything and do it right.
 
 ---
 
@@ -15,36 +15,27 @@ In Greek myth, the Polymedes were the wise nurses of Zeus — learned, all-knowi
 Autolycus was the pioneer: the world's first AI agent for FreeBSD, a self-improving agent with 12,795 commits of battle-tested architecture. It taught us what works and what doesn't.
 
 **Lessons carried forward:**
-- The closed learning loop works — agents that create skills from experience, self-improve during use, and nudge themselves to persist knowledge outperform static agents
+- The closed learning loop works. Agents that create skills from experience, self-improve during use, and nudge themselves to persist knowledge outperform static agents
 - Cross-platform messaging from a single gateway process is the right model
-- Model-agnosticism is non-negotiable — no lock-in, no registration, no tracking
-- Subagent delegation and parallelization collapse multi-step pipelines into zero-context-cost turns
-- The TUI matters — multiline editing, slash-command autocomplete, streaming tool output, interrupt-and-redirect
-
-**What we're leaving behind:**
-- The Python runtime — GIL contention, dependency hell, virtual environment drift, the performance tax on every tool call
-- The fragmented codebase — 78.7% Python, 12.9% TypeScript, scattered tooling that grew organically over thousands of commits
-- The archived state — Autolycus has run its course. Its lessons are encoded here. Its code is not.
-
-### Khronos — The Workflow Engine
+- Model-agnosticism is the way forward. You can't lose your data because you changed models or providers.
+- Subagent delegation for complex tasks
+  
+### Khronos: The Workflow Engine
 
 Khronos is the lightweight durable workflow orchestration server already written in Rust. Polymede uses and evolves Khronos as its scheduling and workflow backbone:
 
-- Cron and interval-based schedule triggers with namespace isolation
+- Cron replacement with schedules rather than cronjobs
 - Multi-step workflow execution with ordered activity chains
 - Configurable retry policies with exponential backoff
 - Heartbeat monitoring to detect and fail stalled activities
-- Overlap policies: `skip`, `buffer`, or `terminate`
-- Full durability — all state persisted to SQLite, survives restarts
-- Clean gRPC interface: `ScheduleService`, `WorkflowService`, `WorkerService`
 
-Polymede doesn't just consume Khronos — it extends it. The agent's own internal workflows (memory compression cycles, skill self-improvement, user-model updates) run through Khronos, making the agent's self-maintenance first-class scheduled work.
+Polymede will now drive the forward evolution of Khronos.
 
-### TotalRecall — The Memory System
+### TotalRecall: The Memory System
 
 TotalRecall is the recursive memory compression system. Polymede integrates and re-implements its distillation pipeline in Rust:
 
-- **Layer 0**: Raw interaction log — every command, every output, every error
+- **Layer 0**: Raw interaction log: every command, every output, every error
 - **Layer 1+**: LLM-distilled memories, recursively compressed to higher abstraction levels
 - **Tag-based recall**: Retrieve relevant memories by semantic tags, bounded by token budget
 - **Cross-cutting insight**: Higher compression levels surface patterns that span sessions and domains
@@ -56,83 +47,26 @@ The Rust re-implementation gains zero-copy memory access, lock-free concurrent i
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Polymede Agent                          │
-│                                                             │
-│  ┌──────────┐   ┌──────────┐   ┌──────────────────────────┐│
-│  │  TUI     │   │ Gateway  │   │     Agent Core Loop      ││
-│  │  (rust-  │   │ (multi-  │   │                           ││
-│  │   line)  │   │  proto)  │   │  · Turn orchestration    ││
-│  └────┬─────┘   └────┬─────┘   │  · Tool dispatch         ││
-│       │              │         │  · Context management    ││
-│       └──────┬───────┘         │  · Skill invocation      ││
-│              │                 │  · Subagent spawning     ││
-│              ▼                 └──────────────┬──────────┘│
-│  ┌──────────────────────────────────────────┬─┘           │
-│  │         Tool Registry                    │             │
-│  │  (40+ tools, extensible, zero-cost trait)│             │
-│  └──────────────────────────────────────────┘             │
-│                                                             │
-│  ┌─────────────┐    ┌──────────────┐    ┌───────────────┐  │
-│  │   Khronos   │    │ TotalRecall  │    │   User Model  │  │
-│  │  (evolved)  │    │ (reimpl. in  │    │  (dialectic,  │  │
-│  │             │    │   Rust)      │    │   persistent) │  │
-│  │ · Scheduler │    │ · L0 ingest  │    │               │  │
-│  │ · Workflows │    │ · L1+ compress│   │ · Preferences │  │
-│  │ · Workers   │    │ · Tag recall  │    │ · History     │  │
-│  │ · Retry     │    │ · Token budget│   │ · Beliefs     │  │
-│  └─────────────┘    └──────────────┘    └───────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-        ┌──────────┐   ┌──────────┐   ┌──────────┐
-        │ SQLite   │   │  LLM     │   │   Skill   │
-        │ (durability)│ (any      │   │  Store    │
-        │            │  provider) │   │  (agentskills│
-        └──────────┘   └──────────┘   │   compat)  │
-                                      └──────────┘
+To be defined later
 ```
 
 ---
 
 ## Design Principles
 
-1. **Rust only** — No Python, no TypeScript, no polyglot drift. One language, one toolchain, one binary.
-2. **Learned, not invented** — Every subsystem exists because Autolycus proved the concept. We're not guessing what works.
-3. **Evolve, don't replace** — Khronos and TotalRecall are starting points, not finished products. Polymede pushes them further.
-4. **No lock-in** — Any LLM provider. Any model. Switch with a command. No accounts, no tracking, no phone calls home.
-5. **Durable by default** — If it can be lost, it's persisted. SQLite for state, filesystem for artifacts.
-6. **Self-improving** — Skills are created from experience. Skills self-improve during use. The agent nudges itself to remember.
-7. **Cross-platform** — FreeBSD, Linux, macOS. Native on all three. No emulation, no containers.
+1. **Rust based**
+2. **Learned, not invented** Every subsystem exists because Autolycus proved the concept. 
+3. **Evolve, don't replace**
+4. **No lock-in** Any LLM provider. Any model. Switch with a command. No accounts, no tracking, no phone calls home.
+5. **Durable by default**  If it can be lost, it's persisted. SQLite for state, filesystem for artifacts.
+6. **Self-improving** Skills are created from experience. Skills self-improve during use. The agent nudges itself to remember.
+7. **Cross-platform** FreeBSD, Linux, macOS. Native on all three. No emulation, no containers.
 
 ---
 
 ## Core Systems
 
-### Agent Core Loop
-The main event loop processes turns: receives input (TUI or gateway), orchestrates tool calls, manages conversation context, invokes skills, spawns subagents for parallel work, and compresses context when budgets are approached.
-
-### Tool System
-40+ tools organized in a trait-based registry. Each tool is a Rust struct implementing a common `Tool` trait. Zero-cost dispatch via dynamic trait objects. Tools include: terminal execution (via `ptyprocess`-equivalent), file operations, web search, image generation, voice, and MCP server bridging.
-
-### Skill System
-Procedural memory stored as executable skill definitions. Compatible with the agentskills.io open standard. Skills are created autonomously after complex tasks, self-improve during use, and are browsable via `/skills`.
-
-### Memory Pipeline
-TotalRecall's recursive compression, re-implemented in Rust. Raw interactions flow into Layer 0. Background Khronos workflows trigger distillation cycles that produce Layer 1+ memories. Tag-based recall with token budgeting ensures relevant context without overflow.
-
-### User Model
-Dialectic user modeling — the agent builds a deepening profile of who you are across sessions. Preferences, history, beliefs, working patterns. Persistent, private, never leaves the machine.
-
-### Messaging Gateway
-Single gateway process supporting Telegram, Discord, Slack, WhatsApp, Signal, and email. Cross-platform conversation continuity. Same slash commands, same agent brain, regardless of entry point.
-
-### Cron & Scheduling
-Khronos-evolved scheduler. Natural-language scheduled tasks with delivery to any platform. Daily reports, nightly backups, weekly audits — all running unattended.
-
-### Subagent Delegation
-Spawn isolated subagents for parallel workstreams. Each subagent gets its own context window, tool access, and result channel. Results merge back into the parent turn with zero context cost.
+To be defined
 
 ---
 
