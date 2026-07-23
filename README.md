@@ -91,8 +91,8 @@ To be defined
 
 ### Prerequisites
 
-- **Rust 1.75+** (stable) — `rustup install stable`
-- **SQLite3** development headers — `pkg-config --cflags sqlite3` must succeed
+- **Rust 1.75+** (stable)  `rustup install stable`
+- **SQLite3** development headers  `pkg-config --cflags sqlite3` must succeed
 - **Tested platforms:**
   - FreeBSD 14.x / 15.0 (amd64)
   - Linux (amd64, aarch64)
@@ -213,7 +213,7 @@ cargo clippy -- -D warnings
 
 ## License
 
-LGPL v2.1 — see [LICENSE](LICENSE).
+LGPL v2.1; see [LICENSE](LICENSE).
 
 An independent project by **Technetia Inc**.  
 Daughter of Autolycus. Built on lessons, not legacy.
