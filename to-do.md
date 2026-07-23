@@ -31,8 +31,8 @@
 
 ### Gateway Polish
 - [x] Rate limiting per platform adapter (per-domain, burst limit, Cloudflare/WAF block detection + auto-blacklist)
-- [ ] Reconnection backoff strategies
-- [ ] Message threading support (Telegram topics, Discord threads)
+- [x] Reconnection backoff strategies (configurable exponential + jitter)
+- [x] Message threading support (thread_id field in InboundMessage, Telegram/Discord ready)
 
 ### Testing
 - [x] Integration tests for gateway adapters (8/8 passing)

@@ -21,6 +21,7 @@ impl PlatformAdapter for MockAdapter {
             platform: self.platform.clone(),
             user_id: "test_user".into(),
             content: "Hello from mock adapter".into(),
+            thread_id: None,
             timestamp: chrono::Utc::now(),
         };
         let _ = inbox_tx.send(msg);
@@ -82,7 +83,8 @@ async fn test_inbound_message_structure() {
         platform: Platform::Signal,
         user_id: "signal_user_123".into(),
         content: "Test signal message".into(),
-        timestamp: chrono::Utc::now(),
+        thread_id: None,
+            timestamp: chrono::Utc::now(),
     };
     assert_eq!(msg.platform, Platform::Signal);
     assert_eq!(msg.user_id, "signal_user_123");
@@ -95,7 +97,8 @@ async fn test_inbound_message_clone() {
         platform: Platform::Email,
         user_id: "email@example.com".into(),
         content: "Subject: Test\nBody: Hello".into(),
-        timestamp: chrono::Utc::now(),
+        thread_id: None,
+            timestamp: chrono::Utc::now(),
     };
     let cloned = msg.clone();
     assert_eq!(cloned.platform, msg.platform);

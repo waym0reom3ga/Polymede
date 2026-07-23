@@ -63,6 +63,59 @@ pub struct GatewayConfig {
     /// Poll interval for long-polling adapters (default 5 s).
     #[serde(default = "default_poll_interval_secs")]
     pub poll_interval_secs: u64,
+    /// Reconnection backoff strategy configuration.
+    #[serde(default)]
+    pub reconnect: Option<ReconnectConfig>,
+}
+
+/// Configurable reconnection backoff strategy for gateway adapters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconnectConfig {
+    /// Initial backoff duration in seconds (default 2).
+    #[serde(default = "default_initial_backoff_secs")]
+    pub initial_backoff_secs: u64,
+    /// Maximum backoff duration in seconds (default 120).
+    #[serde(default = "default_max_backoff_secs")]
+    pub max_backoff_secs: u64,
+    /// Multiplier for exponential growth (default 2.0).
+    #[serde(default = "default_backoff_multiplier")]
+    pub backoff_multiplier: f64,
+    /// Maximum number of reconnect attempts before giving up (default 10).
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: u32,
+    /// Add random jitter to backoff (0.0–1.0 fraction, default 0.25).
+    #[serde(default = "default_jitter_fraction")]
+    pub jitter_fraction: f64,
+}
+
+fn default_initial_backoff_secs() -> u64 { 2 }
+fn default_max_backoff_secs() -> u64 { 120 }
+fn default_backoff_multiplier() -> f64 { 2.0 }
+fn default_max_attempts() -> u32 { 10 }
+fn default_jitter_fraction() -> f64 { 0.25 }
+
+impl Default for ReconnectConfig {
+    fn default() -> Self {
+        Self {
+            initial_backoff_secs: 2,
+            max_backoff_secs: 120,
+            backoff_multiplier: 2.0,
+            max_attempts: 10,
+            jitter_fraction: 0.25,
+        }
+    }
+}
+
+impl ReconnectConfig {
+    /// Compute the next backoff duration with optional jitter.
+    pub fn compute_backoff(&self, current: Duration, rng_seed: u64) -> Duration {
+        let base = (current.as_secs_f64() * self.backoff_multiplier)
+            .min(self.max_backoff_secs as f64);
+        // Deterministic jitter based on seed to avoid needing a real RNG.
+        let jitter_range = base * self.jitter_fraction;
+        let jitter = ((rng_seed as f64 * 0.157319) % 1.0) * jitter_range;
+        Duration::from_secs_f64((base + jitter).min(self.max_backoff_secs as f64))
+    }
 }
 
 fn default_poll_interval_secs() -> u64 {
@@ -132,6 +185,7 @@ impl Default for GatewayConfig {
             signal: None,
             email: None,
             poll_interval_secs: 5,
+            reconnect: Some(ReconnectConfig::default()),
         }
     }
 }
@@ -256,6 +310,8 @@ pub struct InboundMessage {
     pub platform: Platform,
     pub user_id: String,
     pub content: String,
+    /// Optional thread/topic identifier (Telegram forum topic ID, Discord channel/thread ID).
+    pub thread_id: Option<String>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
@@ -369,6 +425,7 @@ impl TelegramAdapter {
                         platform: Platform::Telegram,
                         user_id,
                         content: content.to_string(),
+                        thread_id: None, // Telegram topics wired in future adapter update.
                         timestamp: chrono::Utc::now(),
                     });
                 }
@@ -822,6 +879,7 @@ impl SignalAdapter {
                     platform: Platform::Signal,
                     user_id: from.to_string(),
                     content: body.to_string(),
+                    thread_id: None, // Signal threads wired in future adapter update.
                     timestamp: chrono::Utc::now(),
                 });
             }
@@ -1014,8 +1072,6 @@ pub struct Gateway {
     agent_input_tx: mpsc::UnboundedSender<AgentInput>,
     agent_output_rx: mpsc::UnboundedReceiver<AgentOutput>,
     shutdown_flag: Arc<AtomicBool>,
-    reconnect_backoff: Duration,
-    max_reconnect_attempts: u32,
 }
 
 impl Gateway {
@@ -1035,8 +1091,6 @@ impl Gateway {
             agent_input_tx,
             agent_output_rx,
             shutdown_flag,
-            reconnect_backoff: Duration::from_secs(2),
-            max_reconnect_attempts: 10,
         }
     }
 
@@ -1075,15 +1129,17 @@ impl Gateway {
 
         // Start all platform adapters.
         let (inbox_tx, mut inbox_rx) = mpsc::unbounded_channel::<InboundMessage>();
+        let reconnect_config = self.config.reconnect.clone().unwrap_or_default();
 
         let adapter_clones: Vec<Arc<dyn PlatformAdapter>> = self.adapters.clone();
         let mut adapter_handles = Vec::new();
         for adapter in adapter_clones {
             let name = adapter.platform_name();
             let tx = inbox_tx.clone();
+            let rc = reconnect_config.clone();
 
             let handle = tokio::spawn(async move {
-                Self::run_with_reconnect(adapter, tx).await;
+                Self::run_with_reconnect(adapter, tx, rc).await;
                 tracing::info!(platform = %name, "adapter exited");
             });
 
@@ -1149,10 +1205,11 @@ impl Gateway {
     async fn run_with_reconnect(
         adapter: Arc<dyn PlatformAdapter>,
         inbox_tx: mpsc::UnboundedSender<InboundMessage>,
+        config: ReconnectConfig,
     ) {
         let platform = adapter.platform_name();
-        let mut backoff = Duration::from_secs(2);
-        let max_backoff = Duration::from_secs(120);
+        let mut backoff = Duration::from_secs(config.initial_backoff_secs);
+        let max_backoff = Duration::from_secs(config.max_backoff_secs);
         let mut attempts = 0u32;
 
         loop {
@@ -1160,7 +1217,7 @@ impl Gateway {
                 Ok(()) => {
                     tracing::info!(platform = %platform, "adapter connected");
                     attempts = 0;
-                    backoff = Duration::from_secs(2);
+                    backoff = Duration::from_secs(config.initial_backoff_secs);
                     break; // Adapter ran to completion (shouldn't happen with real loops).
                 }
                 Err(GatewayError::Shutdown) => {
@@ -1178,9 +1235,10 @@ impl Gateway {
             }
 
             attempts += 1;
-            if attempts >= 10 {
+            if attempts >= config.max_attempts {
                 tracing::error!(
                     platform = %platform,
+                    max_attempts = config.max_attempts,
                     "max reconnect attempts reached, giving up"
                 );
                 break;
@@ -1192,7 +1250,9 @@ impl Gateway {
                 "reconnecting in"
             );
             tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(max_backoff);
+            // Exponential backoff with deterministic jitter.
+            let seed = (attempts as u64).wrapping_mul(0x9E3779B97F4A7C15);
+            backoff = config.compute_backoff(backoff, seed).min(max_backoff);
         }
     }
 
