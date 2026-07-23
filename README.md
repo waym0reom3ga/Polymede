@@ -10,7 +10,7 @@ In Greek myth, the Polymedes were the wise nurses of Zeus. Learned, all-knowing,
 
 ## Lineage
 
-### Autolycus — What We Learned
+### What We Learned
 
 Autolycus was the pioneer: the world's first AI agent for FreeBSD, a self-improving agent with 12,795 commits of battle-tested architecture. It taught us what works and what doesn't.
 
