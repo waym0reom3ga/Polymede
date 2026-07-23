@@ -28,6 +28,7 @@ prost = "0.13"
 
 # LLM clients (custom, provider-agnostic)
 reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+url = "2"
 
 # Logging
 tracing = "0.1"
@@ -51,3 +52,6 @@ tiktoken-rs = "0.6"
 
 [build-dependencies]
 prost-build = "0.13"
+
+[dev-dependencies]
+mockito = "1"

@@ -348,10 +348,15 @@ impl Agent {
         let persona = Self::build_persona(&config);
         let skills = Self::load_skills(&config).await;
 
+        let rate_limiter = Arc::new(crate::ratelimit::RateLimiter::new());
+
         let tool_context = ToolContext::new(
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             None,
         );
+        // Patch rate_limiter into context (ToolContext is not Arc so we set directly).
+        let mut tool_context = tool_context;
+        tool_context.rate_limiter = Some(rate_limiter);
 
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (output_tx, output_rx) = mpsc::unbounded_channel();
@@ -1254,14 +1259,14 @@ mod tests {
     #[test]
     fn agent_input_content() {
         let tui = AgentInput::Tui("hello".into());
-        assert_eq!(tui.content(), "hello");
+        assert_eq!(tui.content(), Some("hello"));
         assert_eq!(tui.source_label(), "tui");
 
         let gw = AgentInput::Gateway {
             source: "grpc".into(),
             content: "world".into(),
         };
-        assert_eq!(gw.content(), "world");
+        assert_eq!(gw.content(), Some("world"));
         assert_eq!(gw.source_label(), "grpc");
     }
 }
