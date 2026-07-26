@@ -15,7 +15,7 @@ use rustyline::config::Configurer;
 use rustyline::history::DefaultHistory;
 use rustyline::{CompletionType, Config as RlConfig, Editor};
 use tokio::sync::mpsc;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 
 use crate::agent::{Agent, AgentInput, AgentOutput};
 use crate::config::Config;
@@ -198,7 +198,7 @@ impl TuiApp {
         loop {
             match output_rx.recv().await {
                 Some(output) => {
-                    let mut st = state.lock().await;
+                    let mut st = state.lock().expect("mutex poisoned");
                     st.total_prompt_tokens += output.token_usage.prompt_tokens;
                     st.total_completion_tokens += output.token_usage.completion_tokens;
 
@@ -231,7 +231,7 @@ impl TuiApp {
         loop {
             match chunk_rx.recv().await {
                 Some(chunk) => {
-                    let mut st = state.lock().await;
+                    let mut st = state.lock().expect("mutex poisoned");
                     st.current_response.push_str(&chunk);
                 }
                 None => break,
@@ -249,7 +249,7 @@ impl TuiApp {
         match lower.as_str() {
             "/new" | "/reset" => {
                 tracing::info!("resetting conversation");
-                let mut st = self.state.lock().await;
+                let mut st = self.state.lock().expect("mutex poisoned");
                 st.history.clear();
                 st.current_response.clear();
                 st.tool_outputs.clear();
@@ -259,13 +259,13 @@ impl TuiApp {
             }
             "/stop" => {
                 tracing::info!("interrupting current turn");
-                let mut st = self.state.lock().await;
+                let mut st = self.state.lock().expect("mutex poisoned");
                 st.interrupted = true;
                 st.is_processing = false;
                 Some(TuiMessage::System("Turn interrupted.".into()))
             }
             "/usage" => {
-                let st = self.state.lock().await;
+                let st = self.state.lock().expect("mutex poisoned");
                 let msg = format!(
                     "Token usage -- prompt: {}, completion: {}, total: {}",
                     st.total_prompt_tokens,
@@ -413,7 +413,7 @@ impl TuiApp {
 
         // Show welcome message.
         {
-            let mut st = self.state.lock().await;
+            let mut st = self.state.lock().expect("mutex poisoned");
             st.history.push(TuiMessage::System(
                 "Polymede ready. Type a message or /help for commands.".into(),
             ));
@@ -441,7 +441,7 @@ impl TuiApp {
                     if key.code == crossterm::event::KeyCode::Char('c')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                     {
-                        let mut st = self.state.lock().await;
+                        let mut st = self.state.lock().expect("mutex poisoned");
                         if st.is_processing {
                             st.interrupted = true;
                             st.is_processing = false;
@@ -479,14 +479,14 @@ impl TuiApp {
                     // Handle slash commands.
                     if trimmed.starts_with('/') {
                         if let Some(msg) = self.handle_slash_command(&trimmed).await {
-                            self.state.lock().await.history.push(msg);
+                            self.state.lock().expect("mutex poisoned").history.push(msg);
                         }
                         continue;
                     }
 
                     // Mark processing and push user input to history.
                     {
-                        let mut st = self.state.lock().await;
+                        let mut st = self.state.lock().expect("mutex poisoned");
                         st.is_processing = true;
                         st.tool_outputs.clear();
                         st.history.push(TuiMessage::UserInput(trimmed.clone()));
@@ -531,7 +531,7 @@ impl TuiApp {
         .split(area);
 
         // Output area.
-        let state = self.state.blocking_lock();
+        let state = self.state.lock().expect("mutex poisoned");
         let output_text = Self::messages_to_lines(
             &state.history,
             &state.tool_outputs,
