@@ -361,8 +361,13 @@ impl MemoryIntegration {
                 ))
             })?;
         }
-        let url = format!("sqlite:{}", path.display());
-        SqlitePool::connect(&url)
+        // Use DELETE journal mode for btrfs compatibility (WAL can fail on some btrfs setups).
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(path)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Delete)
+            .create_if_missing(true);
+
+        SqlitePool::connect_with(options)
             .await
             .map_err(|e| MemoryError::Db(format!("cannot connect to {:?}: {e}", path)))
     }
