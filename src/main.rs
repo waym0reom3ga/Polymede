@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use std::io::Write;
 use tokio::signal;
 
 use polymede::config::Config;
@@ -66,9 +67,16 @@ async fn main() {
     let shutdown_rx = make_shutdown_rx();
 
     match cli.command {
-        None | Some(Commands::Setup) => {
-            if let Err(e) = run_default_or_setup(config, shutdown_rx).await {
+        None => {
+            // Default: launch interactive TUI
+            if let Err(e) = run_tui(config, shutdown_rx).await {
                 tracing::error!(error = %e, "polymede exited with error");
+            }
+        }
+        Some(Commands::Setup) => {
+            // Interactive setup wizard
+            if let Err(e) = run_setup_wizard(config, shutdown_rx).await {
+                tracing::error!(error = %e, "setup failed");
             }
         }
         Some(Commands::Model) => {
@@ -136,7 +144,7 @@ fn make_shutdown_rx() -> Arc<tokio::sync::mpsc::Receiver<()>> {
     Arc::new(rx)
 }
 
-async fn run_default_or_setup(
+async fn run_tui(
     config: Option<Config>,
     _shutdown_rx: Arc<tokio::sync::mpsc::Receiver<()>>,
 ) -> Result<(), String> {
@@ -155,6 +163,75 @@ async fn run_default_or_setup(
             Ok(())
         }
     }
+}
+
+/// Interactive setup wizard: asks for provider, model, API key, base URL.
+async fn run_setup_wizard(
+    config: Option<Config>,
+    _shutdown_rx: Arc<tokio::sync::mpsc::Receiver<()>>,
+) -> Result<(), String> {
+    let mut cfg = match config {
+        Some(c) => c,
+        None => Config::create_default().map_err(|e| format!("cannot create default config: {e}"))?,
+    };
+
+    println!("=== Polymede Setup ===\n");
+
+    // Provider
+    println!("Supported providers: openrouter, lmstudio, ollama, anthropic, custom");
+    print!("Provider [{}]: ", cfg.llm.provider);
+    std::io::stdout().flush().ok();
+    let line = read_line()?;
+    if !line.is_empty() {
+        cfg.llm.provider = line.trim().to_string();
+    }
+
+    // Model
+    print!("Model [{}]: ", cfg.llm.model);
+    std::io::stdout().flush().ok();
+    let line = read_line()?;
+    if !line.is_empty() {
+        cfg.llm.model = line.trim().to_string();
+    }
+
+    // API key
+    let current_key_display = match &cfg.llm.api_key {
+        Some(k) if k.len() > 8 => format!("{}****", &k[..4]),
+        Some(_) => "set".into(),
+        None => "not set".into(),
+    };
+    print!("API key (leave empty to skip, current: {}): ", current_key_display);
+    std::io::stdout().flush().ok();
+    let line = read_line()?;
+    if !line.is_empty() {
+        cfg.llm.api_key = Some(line.trim().to_string());
+    }
+
+    // Base URL (optional)
+    let current_url = cfg.llm.base_url.as_deref().unwrap_or("(auto)");
+    print!("Base URL [{}]: ", current_url);
+    std::io::stdout().flush().ok();
+    let line = read_line()?;
+    if !line.is_empty() {
+        cfg.llm.base_url = Some(line.trim().to_string());
+    }
+
+    // Save
+    cfg.save().map_err(|e| format!("failed to save config: {e}"))?;
+
+    println!("\nConfig saved to {:?}", Config::config_path());
+    println!("Run 'polymede' to start the agent.");
+
+    Ok(())
+}
+
+/// Helper: read a line from stdin.
+fn read_line() -> Result<String, String> {
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| format!("failed to read input: {e}"))?;
+    Ok(input)
 }
 
 async fn run_model(
