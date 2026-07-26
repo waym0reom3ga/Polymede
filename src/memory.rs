@@ -352,6 +352,15 @@ impl MemoryIntegration {
     // -- database helpers ---------------------------------------------------
 
     async fn connect(path: &std::path::Path) -> Result<SqlitePool, MemoryError> {
+        // Ensure parent directory exists before SQLite tries to create the file.
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                MemoryError::Io(format!(
+                    "cannot create database directory {:?}: {e}",
+                    parent
+                ))
+            })?;
+        }
         let url = format!("sqlite:{}", path.display());
         SqlitePool::connect(&url)
             .await
