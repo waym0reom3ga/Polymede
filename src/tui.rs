@@ -669,7 +669,8 @@ impl TuiApp {
             }
         }
 
-        let input_para = Paragraph::new(Line::from(spans));
+        let input_para = Paragraph::new(Line::from(spans))
+            .wrap(Wrap { trim: true });
 
         frame.render_widget(input_para, bottom_chunks[1]);
     }

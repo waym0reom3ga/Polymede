@@ -56,13 +56,11 @@ async fn main() {
     let cli = PolymedeCli::parse();
 
     let config = load_config_or_default().await;
-    let log_level = config.as_ref().map(|c| c.logging.level.clone()).unwrap_or_default();
-    init_logging(&log_level);
-
-    tracing::info!(
-        version = env!("CARGO_PKG_VERSION"),
-        "polymede starting"
-    );
+    // Only init tracing for non-TUI commands -- stderr writes corrupt the alternate screen.
+    if cli.command.is_some() {
+        let log_level = config.as_ref().map(|c| c.logging.level.clone()).unwrap_or_default();
+        init_logging(&log_level);
+    }
 
     let shutdown_rx = make_shutdown_rx();
 
