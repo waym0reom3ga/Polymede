@@ -630,14 +630,43 @@ impl TuiApp {
 
         frame.render_widget(status_bar, bottom_chunks[0]);
 
-        // Render input line.
-        let input_para = Paragraph::new(Line::from(vec![
+        // Render input line with inline completion suggestion.
+        let typed = st.pending_input.clone();
+        let mut spans: Vec<Span> = vec![
             Span::styled(
                 input_prefix,
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             ),
-            Span::raw(st.pending_input.clone()),
-        ]));
+            Span::raw(typed.clone()),
+        ];
+
+        // Show inline completion suggestion if typing a slash command.
+        if typed.starts_with('/') && !typed.is_empty() {
+            let matches: Vec<&str> = SLASH_COMMANDS.iter()
+                .filter(|cmd| cmd.starts_with(&typed))
+                .copied()
+                .collect();
+
+            if !matches.is_empty() {
+                // Find longest common prefix of all matches.
+                let suggestion: String = matches.iter()
+                    .fold(typed.clone(), |acc, s| {
+                        let common_len = acc.chars().zip(s.chars())
+                            .take_while(|(a, b)| a == b)
+                            .count();
+                        acc[..common_len.min(acc.len())].to_string()
+                    });
+
+                if suggestion.len() > typed.len() {
+                    spans.push(Span::styled(
+                        suggestion[typed.len()..].to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+            }
+        }
+
+        let input_para = Paragraph::new(Line::from(spans));
 
         frame.render_widget(input_para, bottom_chunks[1]);
     }
