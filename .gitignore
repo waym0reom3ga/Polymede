@@ -1,2 +1,3 @@
 .opencode/plugins/emdash-notifications.js
 .cargo/config.toml
+target/

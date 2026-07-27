@@ -229,7 +229,7 @@ impl LlmClient {
             };
 
             let url = format!("{base_url}/chat/completions");
-            tracing::debug!(url, model = %config.model, "request");
+            tracing::debug!(url, model = %config.model, body = %serde_json::to_string(&body).unwrap_or_default(), "request");
 
             let resp = self
                 .http

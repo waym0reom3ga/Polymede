@@ -165,7 +165,7 @@ async fn run_tui(
     }
 }
 
-/// Interactive setup wizard: asks for provider, model, API key, base URL.
+/// Interactive setup wizard: provider -> URL -> key -> pick model from server.
 async fn run_setup_wizard(
     config: Option<Config>,
     _shutdown_rx: Arc<tokio::sync::mpsc::Receiver<()>>,
@@ -177,24 +177,33 @@ async fn run_setup_wizard(
 
     println!("=== Polymede Setup ===\n");
 
-    // Provider
-    println!("Supported providers: openrouter, lmstudio, ollama, anthropic, custom");
-    print!("Provider [{}]: ", cfg.llm.provider);
+    // Step 1: Provider type
+    let current_provider = cfg.llm.provider.as_str();
+    println!("Connection type:");
+    println!("  1. local   - Local server (LM Studio, Ollama, etc.)");
+    println!("  2. custom   - Custom remote endpoint\n");
+    print!("Provider [{}]: ", current_provider);
+    std::io::stdout().flush().ok();
+    let line = read_line()?;
+    let choice = line.trim();
+    if !choice.is_empty() {
+        match choice {
+            "1" | "local" => cfg.llm.provider = "local".into(),
+            "2" | "custom" => cfg.llm.provider = "custom".into(),
+            other => cfg.llm.provider = other.to_string(),
+        }
+    }
+
+    // Step 2: Base URL
+    let current_url = cfg.llm.base_url.as_deref().unwrap_or("(none)");
+    print!("Server address [{}]: ", current_url);
     std::io::stdout().flush().ok();
     let line = read_line()?;
     if !line.is_empty() {
-        cfg.llm.provider = line.trim().to_string();
+        cfg.llm.base_url = Some(line.trim().to_string());
     }
 
-    // Model
-    print!("Model [{}]: ", cfg.llm.model);
-    std::io::stdout().flush().ok();
-    let line = read_line()?;
-    if !line.is_empty() {
-        cfg.llm.model = line.trim().to_string();
-    }
-
-    // API key
+    // Step 3: API key
     let current_key_display = match &cfg.llm.api_key {
         Some(k) if k.len() > 8 => format!("{}****", &k[..4]),
         Some(_) => "set".into(),
@@ -207,13 +216,51 @@ async fn run_setup_wizard(
         cfg.llm.api_key = Some(line.trim().to_string());
     }
 
-    // Base URL (optional)
-    let current_url = cfg.llm.base_url.as_deref().unwrap_or("(auto)");
-    print!("Base URL [{}]: ", current_url);
-    std::io::stdout().flush().ok();
-    let line = read_line()?;
-    if !line.is_empty() {
-        cfg.llm.base_url = Some(line.trim().to_string());
+    // Step 4: Fetch models from server and let user pick
+    let base_url = cfg.llm.base_url.as_deref().unwrap_or("");
+    let api_key = cfg.llm.api_key.clone();
+
+    if !base_url.is_empty() {
+        println!("\nFetching available models...");
+        // Use key if provided, otherwise try without auth (common for local servers)
+        let models_result = match &api_key {
+            Some(key) => fetch_models(base_url, Some(key)).await,
+            None => fetch_models(base_url, None).await,
+        };
+        match models_result {
+            Ok(model_list) if !model_list.is_empty() => {
+                println!("Available models:");
+                for (i, m) in model_list.iter().enumerate() {
+                    println!("  {}. {}", i + 1, m);
+                }
+                print!("\nSelect model (number or name): ");
+                std::io::stdout().flush().ok();
+                let line = read_line()?;
+                let choice = line.trim();
+                if !choice.is_empty() {
+                    if let Ok(idx) = choice.parse::<usize>() {
+                        if idx > 0 && idx <= model_list.len() {
+                            cfg.llm.model = model_list[idx - 1].clone();
+                        } else {
+                            println!("Invalid selection, keeping current: {}", cfg.llm.model);
+                        }
+                    } else {
+                        cfg.llm.model = choice.to_string();
+                    }
+                }
+            }
+            Ok(_) => {
+                println!("No models found from server.");
+                ask_model_manually(&mut cfg).await;
+            }
+            Err(e) => {
+                println!("Could not fetch models: {}", e);
+                ask_model_manually(&mut cfg).await;
+            }
+        }
+    } else {
+        println!("\nNo server address set, entering model manually.");
+        ask_model_manually(&mut cfg).await;
     }
 
     // Save
@@ -223,6 +270,47 @@ async fn run_setup_wizard(
     println!("Run 'polymede' to start the agent.");
 
     Ok(())
+}
+
+/// Ask user to type model name manually.
+async fn ask_model_manually(cfg: &mut Config) {
+    print!("Model [{}]: ", cfg.llm.model);
+    std::io::stdout().flush().ok();
+    let line = read_line().unwrap_or_default();
+    if !line.trim().is_empty() {
+        cfg.llm.model = line.trim().to_string();
+    }
+}
+
+/// Fetch available models from an OpenAI-compatible /models endpoint.
+async fn fetch_models(base_url: &str, api_key: Option<&str>) -> Result<Vec<String>, String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let mut builder = reqwest::Client::new().get(&url);
+    if let Some(key) = api_key {
+        builder = builder.header("Authorization", format!("Bearer {}", key));
+    }
+    let resp = builder
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let body = resp.text().await.map_err(|e| format!("read response: {}", e))?;
+    let data: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse JSON: {}", e))?;
+
+    // OpenAI-compatible /models returns { "data": [{ "id": "...", ... }, ...] }
+    if let Some(data_array) = data.get("data").and_then(|d| d.as_array()) {
+        let models: Vec<String> = data_array
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
+            .collect();
+        Ok(models)
+    } else {
+        Err("unexpected response format".into())
+    }
 }
 
 /// Helper: read a line from stdin.
