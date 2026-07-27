@@ -1,5 +1,4 @@
 use std::io;
-use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,10 +7,11 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{block::Title, Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 use rustyline::config::Configurer;
+
 use rustyline::history::DefaultHistory;
 use rustyline::{CompletionType, Config as RlConfig, Editor};
 use tokio::sync::mpsc;
@@ -22,14 +22,17 @@ use crate::config::Config;
 use crate::memory::MemoryIntegration;
 
 // ---------------------------------------------------------------------------
-// Slash commands
+// Slash commands registry
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 const SLASH_COMMANDS: &[&str] = &[
+    "/help",
+    "/exit",
+    "/queue",
+    "/provider",
+    "/model",
     "/new",
     "/reset",
-    "/model",
     "/skills",
     "/compress",
     "/usage",
@@ -38,10 +41,15 @@ const SLASH_COMMANDS: &[&str] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// TuiCompleter - rustyline autocomplete for slash commands
+// ---------------------------------------------------------------------------
+
+
+
+// ---------------------------------------------------------------------------
 // TUI state
 // ---------------------------------------------------------------------------
 
-/// Messages displayed in the output area.
 #[derive(Debug, Clone)]
 enum TuiMessage {
     UserInput(String),
@@ -50,29 +58,21 @@ enum TuiMessage {
     System(String),
 }
 
-/// Runtime state shared between the TUI render loop and the agent task.
 struct SharedState {
-    /// Accumulated assistant response for the current turn.
     current_response: String,
-    /// Whether the agent is currently processing a turn.
     is_processing: bool,
-    /// Tool outputs for the current turn.
     tool_outputs: Vec<TuiMessage>,
-    /// Total token usage across the session.
     total_prompt_tokens: u32,
     total_completion_tokens: u32,
-    /// Conversation history (user/assistant pairs).
     history: Vec<TuiMessage>,
-    /// Current model name for the status bar.
     model: String,
-    /// Memory status string.
+    provider: String,
     memory_status: String,
-    /// Whether the user pressed Ctrl+C to interrupt.
     interrupted: bool,
 }
 
 impl SharedState {
-    fn new(model: String) -> Self {
+    fn new(model: String, provider: String) -> Self {
         Self {
             current_response: String::new(),
             is_processing: false,
@@ -81,6 +81,7 @@ impl SharedState {
             total_completion_tokens: 0,
             history: Vec::new(),
             model,
+            provider,
             memory_status: "ready".into(),
             interrupted: false,
         }
@@ -92,28 +93,19 @@ impl SharedState {
 // ---------------------------------------------------------------------------
 
 pub struct TuiApp {
-    /// Shared mutable state protected by a tokio Mutex.
     state: Arc<Mutex<SharedState>>,
-    /// Sender for feeding input to the agent.
     input_tx: mpsc::UnboundedSender<AgentInput>,
-    /// Handle to cancel the agent loop.
     agent_shutdown: mpsc::UnboundedSender<()>,
-    /// rustyline editor for multiline input with history.
     editor: Editor<(), DefaultHistory>,
-    /// Current model string (for slash command display).
     current_model: String,
-    /// Config clone for slash command handling.
     config: Config,
-    /// Memory integration for status queries.
     memory: MemoryIntegration,
 }
 
 impl TuiApp {
-    /// Create a new TuiApp, spawning the agent task in the background.
     pub async fn new(config: Config) -> Result<Self, String> {
         let state_dir = Config::state_dir();
 
-        // Memory for the agent.
         let agent_memory = MemoryIntegration::new(
             state_dir.clone(),
             config.memory.clone(),
@@ -123,7 +115,6 @@ impl TuiApp {
         .await
         .map_err(|e| format!("memory init failed: {e}"))?;
 
-        // Separate memory instance for TUI slash commands.
         let tui_memory = MemoryIntegration::new(
             state_dir.clone(),
             config.memory.clone(),
@@ -140,9 +131,9 @@ impl TuiApp {
         let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
 
         let model = config.llm.model.clone();
-        let shared_state = Arc::new(Mutex::new(SharedState::new(model.clone())));
+        let provider = config.llm.provider.clone();
+        let shared_state = Arc::new(Mutex::new(SharedState::new(model.clone(), provider)));
 
-        // Spawn the agent processing loop.
         let state_clone = Arc::clone(&shared_state);
         tokio::spawn(async move {
             let agent_task = agent.run();
@@ -165,7 +156,6 @@ impl TuiApp {
             }
         });
 
-        // Build rustyline editor with history.
         let rl_config = RlConfig::builder()
             .max_history_size(500)
             .map_err(|e| format!("rustyline config failed: {e}"))?
@@ -186,10 +176,6 @@ impl TuiApp {
             memory: tui_memory,
         })
     }
-
-    // -----------------------------------------------------------------------
-    // Output collection loop
-    // -----------------------------------------------------------------------
 
     async fn output_loop(
         output_rx: &mut mpsc::UnboundedReceiver<AgentOutput>,
@@ -223,7 +209,6 @@ impl TuiApp {
         }
     }
 
-    /// Consume streaming text chunks and append to current_response for progressive rendering.
     async fn chunk_loop(
         chunk_rx: &mut mpsc::UnboundedReceiver<String>,
         state: &Arc<Mutex<SharedState>>,
@@ -239,24 +224,91 @@ impl TuiApp {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Slash command handling
-    // -----------------------------------------------------------------------
-
     async fn handle_slash_command(&mut self, cmd: &str) -> Option<TuiMessage> {
-        let lower = cmd.to_lowercase();
+        let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
+        let name = parts[0].to_lowercase();
+        let arg = if parts.len() >= 2 && !parts[1].trim().is_empty() {
+            Some(parts[1].trim())
+        } else {
+            None
+        };
 
-        match lower.as_str() {
+        match name.as_str() {
+            "/help" => {
+                let cmds: Vec<&str> = SLASH_COMMANDS.iter().map(|&s| s).collect();
+                Some(TuiMessage::System(format!(
+                    "Commands: {}",
+                    cmds.join(", ")
+                )))
+            }
+
+            "/exit" => {
+                tracing::info!("exit requested via /exit");
+                self.agent_shutdown.send(()).ok();
+                Some(TuiMessage::System("Exiting...".into()))
+            }
+
+            "/queue" => {
+                let st = self.state.lock().expect("mutex poisoned");
+                let status = if st.is_processing {
+                    "Processing a turn..."
+                } else {
+                    "Idle - no pending turns"
+                };
+                Some(TuiMessage::System(format!(
+                    "Queue: {} | Messages in context: {}",
+                    status,
+                    st.history.len()
+                )))
+            }
+
+            "/provider" => {
+                let st = self.state.lock().expect("mutex poisoned");
+                match arg {
+                    Some(p) if !p.is_empty() => {
+                        drop(st);
+                        // Note: can't mutate self.config here due to borrow rules.
+                        // SetProvider is sent to agent which updates its own config copy.
+                        let _ = self.input_tx.send(AgentInput::SetProvider(p.to_string()));
+                        Some(TuiMessage::System(format!("Switching provider to '{}'.", p)))
+                    }
+                    _ => {
+                        Some(TuiMessage::System(format!(
+                            "Current provider: {}",
+                            st.provider
+                        )))
+                    }
+                }
+            }
+
+            "/model" => {
+                let st = self.state.lock().expect("mutex poisoned");
+                match arg {
+                    Some(m) if !m.is_empty() => {
+                        drop(st);
+                        self.current_model = m.to_string();
+                        let _ = self.input_tx.send(AgentInput::SetModel(m.to_string()));
+                        Some(TuiMessage::System(format!("Switching model to '{}'.", m)))
+                    }
+                    _ => {
+                        Some(TuiMessage::System(format!(
+                            "Current model: {} (provider: {})",
+                            st.model, st.provider
+                        )))
+                    }
+                }
+            }
+
             "/new" | "/reset" => {
                 tracing::info!("resetting conversation");
                 let mut st = self.state.lock().expect("mutex poisoned");
                 st.history.clear();
                 st.current_response.clear();
                 st.tool_outputs.clear();
-                // Also clear agent-side context.
                 let _ = self.input_tx.send(AgentInput::Reset);
                 Some(TuiMessage::System("Conversation reset.".into()))
             }
+
             "/stop" => {
                 tracing::info!("interrupting current turn");
                 let mut st = self.state.lock().expect("mutex poisoned");
@@ -264,6 +316,7 @@ impl TuiApp {
                 st.is_processing = false;
                 Some(TuiMessage::System("Turn interrupted.".into()))
             }
+
             "/usage" => {
                 let st = self.state.lock().expect("mutex poisoned");
                 let msg = format!(
@@ -274,25 +327,7 @@ impl TuiApp {
                 );
                 Some(TuiMessage::System(msg))
             }
-            "/model" => {
-                // /model without args shows current model
-                let msg = format!("Current model: {}", self.current_model);
-                Some(TuiMessage::System(msg))
-            }
-            "/model " | "/model\t" => {
-                // /model with args switches model — send to agent
-                let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
-                if parts.len() == 2 && !parts[1].is_empty() {
-                    let new_model = parts[1].trim().to_string();
-                    self.current_model = new_model.clone();
-                    let _ = self.input_tx.send(AgentInput::SetModel(new_model));
-                    Some(TuiMessage::System(format!("Switching model to '{}'...", parts[1].trim())))
-                } else {
-                    Some(TuiMessage::System(
-                        "Usage: /model <name> (e.g., /model gpt-4o)".into(),
-                    ))
-                }
-            }
+
             "/skills" => {
                 let skill_dir = self.config.skill_dir();
                 if skill_dir.exists() {
@@ -315,6 +350,7 @@ impl TuiApp {
                     Some(TuiMessage::System("No skills directory found.".into()))
                 }
             }
+
             "/compress" => {
                 tracing::info!("manual compression requested");
                 let _ = self.input_tx.send(AgentInput::Compress);
@@ -322,10 +358,12 @@ impl TuiApp {
                     "Context compression triggered.".into(),
                 ))
             }
+
             "/clear_cache" => {
                 let _ = self.input_tx.send(AgentInput::Reset);
                 Some(TuiMessage::System("Tool result cache cleared.".into()))
             }
+
             "/insights" => {
                 match self.memory.status().await {
                     Ok(status) => {
@@ -343,80 +381,22 @@ impl TuiApp {
                     }
                 }
             }
-            "/" => {
-                Some(TuiMessage::System(
-                    "Commands: /new (reset), /stop, /usage, /model [name], /skills, /compress, /clear_cache, /insights".into(),
-                ))
-            }
+
             _ => {
+                let cmds: Vec<&str> = SLASH_COMMANDS.iter().map(|&s| s).collect();
                 Some(TuiMessage::System(format!(
-                    "Unknown command: {cmd}. Available: /new /reset /model /skills /compress /usage /insights /stop"
+                    "Unknown command: {}. Available: {}",
+                    name,
+                    cmds.join(", ")
                 )))
             }
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Slash command autocomplete
-    // -----------------------------------------------------------------------
-
-    #[allow(dead_code)]
-    fn slash_autocomplete(&self, line: &str) -> Option<(String, Range<usize>)> {
-        if !line.starts_with('/') {
-            return None;
-        }
-
-        let prefix = line.to_lowercase();
-        let matches: Vec<&str> = SLASH_COMMANDS
-            .iter()
-            .filter(|cmd| cmd.starts_with(&prefix))
-            .copied()
-            .collect();
-
-        if matches.len() == 1 {
-            Some((matches[0].to_string(), 0..line.len()))
-        } else if matches.len() > 1 {
-            let common = Self::longest_common_prefix(&matches);
-            if common.len() > prefix.len() {
-                Some((common, 0..line.len()))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    #[allow(dead_code)]
-    fn longest_common_prefix(strings: &[&str]) -> String {
-        if strings.is_empty() {
-            return String::new();
-        }
-        let first = strings[0];
-        let mut end = 0;
-        for (i, ch) in first.char_indices() {
-            let idx = first[..i].chars().count();
-            if strings[1..].iter().all(|s| {
-                s.chars().nth(idx).map_or(false, |c| c == ch)
-            }) {
-                end = i + ch.len_utf8();
-            } else {
-                break;
-            }
-        }
-        first[..end].to_string()
-    }
-
-    // -----------------------------------------------------------------------
-    // Run
-    // -----------------------------------------------------------------------
-
-    /// Run the TUI event loop.
     pub async fn run(mut self) -> Result<(), String> {
         let mut terminal = Self::init_terminal()
             .map_err(|e| format!("terminal init failed: {e}"))?;
 
-        // Show welcome message.
         {
             let mut st = self.state.lock().expect("mutex poisoned");
             st.history.push(TuiMessage::System(
@@ -425,24 +405,20 @@ impl TuiApp {
         }
 
         loop {
-            // Render the UI.
             terminal
                 .draw(|frame| self.render(frame))
                 .map_err(|e| format!("render error: {e}"))?;
 
-            // Check for periodic events (resize, etc).
             if event::poll(Duration::from_millis(100))
                 .map_err(|e| format!("poll error: {e}"))?
             {
                 if let Event::Key(key) =
                     event::read().map_err(|e| format!("event read error: {e}"))?
                 {
-                    // Only process key presses (not releases).
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
 
-                    // Ctrl+C interrupts the current turn.
                     if key.code == crossterm::event::KeyCode::Char('c')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                     {
@@ -453,14 +429,12 @@ impl TuiApp {
                             st.history
                                 .push(TuiMessage::System("[Interrupted]".into()));
                         } else {
-                            // Double Ctrl+C exits.
                             tracing::info!("exit requested");
                             break;
                         }
                         continue;
                     }
 
-                    // Ctrl+D exits.
                     if key.code == crossterm::event::KeyCode::Char('d')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                     {
@@ -470,7 +444,6 @@ impl TuiApp {
                 }
             }
 
-            // Read a line from rustyline.
             match self.editor.readline("> ") {
                 Ok(line) => {
                     let trimmed = line.trim().to_string();
@@ -478,10 +451,8 @@ impl TuiApp {
                         continue;
                     }
 
-                    // Add to rustyline history.
                     let _ = self.editor.add_history_entry(line.as_str());
 
-                    // Handle slash commands.
                     if trimmed.starts_with('/') {
                         if let Some(msg) = self.handle_slash_command(&trimmed).await {
                             self.state.lock().expect("mutex poisoned").history.push(msg);
@@ -489,7 +460,6 @@ impl TuiApp {
                         continue;
                     }
 
-                    // Mark processing and push user input to history.
                     {
                         let mut st = self.state.lock().expect("mutex poisoned");
                         st.is_processing = true;
@@ -497,264 +467,106 @@ impl TuiApp {
                         st.history.push(TuiMessage::UserInput(trimmed.clone()));
                     }
 
-                    // Send input to agent.
                     if self.input_tx.send(AgentInput::Tui(trimmed)).is_err() {
-                        return Err("agent input channel closed".into());
+                        return Err("agent channel closed".into());
                     }
                 }
-                Err(rustyline::error::ReadlineError::Eof)
-                | Err(rustyline::error::ReadlineError::Interrupted) => {
-                    tracing::info!("input ended");
+                Err(_) => {
+                    tracing::info!("readline error");
                     break;
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "readline error");
                 }
             }
         }
 
-        Self::restore_terminal()
-            .map_err(|e| format!("terminal restore failed: {e}"))?;
+        Self::cleanup_terminal().map_err(|e| format!("terminal cleanup failed: {e}"))?;
         self.agent_shutdown.send(()).ok();
 
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Rendering
-    // -----------------------------------------------------------------------
-
-    fn render(&self, frame: &mut Frame) {
-        let area = frame.area();
-
-        // Split area: output takes most space, input hint at bottom, status bar at very bottom.
-        let chunks = Layout::vertical([
-            Constraint::Min(1),
-            Constraint::Length(2),
-            Constraint::Length(1),
-        ])
-        .split(area);
-
-        // Output area.
-        let state = self.state.lock().expect("mutex poisoned");
-        let output_text = Self::messages_to_lines(
-            &state.history,
-            &state.tool_outputs,
-            &state.current_response,
-        );
-
-        let title_line = Line::from(Span::styled(
-            " Conversation ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ));
-        let output_block = Block::default()
-            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-            .title(Title::from(title_line));
-
-        let output_paragraph = Paragraph::new(output_text)
-            .block(output_block)
-            .wrap(Wrap { trim: true });
-
-        frame.render_widget(output_paragraph, chunks[0]);
-
-        // Input hint area.
-        let hint = if state.is_processing {
-            Line::from(Span::styled(
-                "Processing... Press Ctrl+C to interrupt",
-                Style::default().fg(Color::Yellow),
-            ))
-        } else {
-            Line::from(Span::styled(
-                "Ready. Type message or / for commands",
-                Style::default().fg(Color::Green),
-            ))
-        };
-
-        let input_block = Block::default()
-            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT);
-
-        frame.render_widget(
-            Paragraph::new(hint).block(input_block),
-            chunks[1],
-        );
-
-        // Status bar.
-        let status_text = Self::status_bar(&state);
-        let status_block = Block::default()
-            .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
-            .style(Style::default().bg(Color::DarkGray));
-
-        frame.render_widget(
-            Paragraph::new(status_text).block(status_block),
-            chunks[2],
-        );
+    fn init_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
+        crossterm::terminal::enable_raw_mode()?;
+        crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+        Terminal::new(CrosstermBackend::new(io::stdout()))
     }
 
-    fn messages_to_lines<'a>(
-        history: &'a [TuiMessage],
-        tool_outputs: &'a [TuiMessage],
-        current_response: &'a str,
-    ) -> Vec<Line<'a>> {
-        // Helper to create a styled line from owned content.
-        let styled_line = |text: String, style: Style| -> Line<'a> {
-            Line::from(Span::styled(text, style))
-        };
-        let mut lines = Vec::new();
+    fn cleanup_terminal() -> io::Result<()> {
+        crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
+        crossterm::terminal::disable_raw_mode()?;
+        Ok(())
+    }
 
-        for msg in history {
+    fn render(&self, frame: &mut Frame) {
+        let st = self.state.lock().expect("mutex poisoned");
+        let chunks = Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(3)].as_ref())
+            .split(frame.size());
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        for msg in &st.history {
             match msg {
                 TuiMessage::UserInput(text) => {
-                    lines.push(Line::from(Span::styled(
-                        "You: ",
-                        Style::default()
-                            .fg(Color::Magenta)
-                            .add_modifier(Modifier::BOLD),
-                    )));
-                    lines.push(Line::from(text.clone()));
-                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            String::from("You: "),
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(text.clone()),
+                    ]));
                 }
                 TuiMessage::AssistantText(text) => {
-                    lines.push(Line::from(Span::styled(
-                        "Polymede: ",
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    )));
-                    for para in text.split("\n\n") {
-                        for line in para.lines() {
-                            lines.push(Line::from(line.to_string()));
-                        }
-                        lines.push(Line::from(""));
+                    for line_text in text.lines() {
+                        lines.push(Line::from(Span::raw(line_text.to_string())));
                     }
                 }
                 TuiMessage::ToolOutput { name, output, ok } => {
                     let color = if *ok { Color::Green } else { Color::Red };
-                    lines.push(styled_line(
-                        format!("[Tool: {name}]"),
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    ));
-                    for line in output.lines() {
-                        lines.push(styled_line(
-                            format!("  {line}"),
-                            Style::default().fg(Color::DarkGray),
-                        ));
-                    }
-                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("[{}] ", name),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(output.clone()),
+                    ]));
                 }
                 TuiMessage::System(text) => {
-                    lines.push(styled_line(
-                        format!("* {text}"),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::ITALIC),
-                    ));
-                    lines.push(Line::from(""));
+                    let styled = Span::styled(
+                        format!("> {}", text),
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC),
+                    );
+                    lines.push(Line::from(vec![styled]));
                 }
             }
         }
 
-        // Show current streaming response if processing.
-        if !current_response.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "Polymede: ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for line in current_response.lines() {
-                lines.push(Line::from(line.to_string()));
-            }
-            lines.push(Line::from(Span::styled(
-                "...",
-                Style::default().fg(Color::Yellow),
-            )));
-        }
-
-        // Show tool outputs for current turn.
-        for msg in tool_outputs {
-            if let TuiMessage::ToolOutput { name, output, ok } = msg {
-                let color = if *ok { Color::Green } else { Color::Red };
-                lines.push(styled_line(
-                    format!("[Tool: {name}]"),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ));
-                for line in output.lines() {
-                    lines.push(styled_line(
-                        format!("  {line}"),
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-                lines.push(Line::from(""));
+        if !st.current_response.is_empty() {
+            for line_text in st.current_response.lines() {
+                lines.push(Line::from(Span::raw(line_text.to_string())));
             }
         }
 
-        lines
-    }
+        let paragraph = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(" Chat "))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(Color::White));
 
-    fn status_bar<'a>(state: &'a SharedState) -> Line<'a> {
-        let total = state.total_prompt_tokens + state.total_completion_tokens;
-        let memory_str = if state.memory_status.is_empty() {
-            "memory: ready"
-        } else {
-            &state.memory_status
-        };
+        frame.render_widget(paragraph, chunks[0]);
 
-        let model_text = format!(" model: {} ", state.model);
-        let tokens_text = format!(" tokens: {} ", total);
-        let mem_text = format!(" {memory_str}");
+        let status = format!(
+            "Model: {} | Provider: {} | Tokens: {}p/{}c",
+            st.model,
+            st.provider,
+            st.total_prompt_tokens,
+            st.total_completion_tokens,
+        );
+        let status_bar = Paragraph::new(Line::from(Span::styled(
+            status,
+            Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD),
+        )))
+        .block(Block::default().borders(Borders::ALL));
 
-        Line::from(vec![
-            Span::styled(
-                model_text,
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                tokens_text,
-                Style::default().fg(Color::Green),
-            ),
-            Span::styled(
-                mem_text,
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                " [Ctrl+C exit] ",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ])
-    }
-
-    // -----------------------------------------------------------------------
-    // Terminal setup/teardown
-    // -----------------------------------------------------------------------
-
-    fn init_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
-        crossterm::terminal::enable_raw_mode()?;
-        crossterm::execute!(
-            io::stdout(),
-            crossterm::terminal::EnterAlternateScreen,
-            crossterm::cursor::Hide,
-        )?;
-
-        Terminal::new(CrosstermBackend::new(io::stdout()))
-    }
-
-    fn restore_terminal() -> io::Result<()> {
-        crossterm::terminal::disable_raw_mode()?;
-        crossterm::execute!(
-            io::stdout(),
-            crossterm::terminal::LeaveAlternateScreen,
-            crossterm::cursor::Show,
-        )?;
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Cleanup on drop (best effort)
-// ---------------------------------------------------------------------------
-
-impl Drop for TuiApp {
-    fn drop(&mut self) {
-        let _ = Self::restore_terminal();
+        frame.render_widget(status_bar, chunks[1]);
     }
 }

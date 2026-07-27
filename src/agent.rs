@@ -258,6 +258,8 @@ pub enum AgentInput {
     Compress,
     /// Switch LLM model at runtime.
     SetModel(String),
+    /// Switch LLM provider at runtime.
+    SetProvider(String),
 }
 
 impl AgentInput {
@@ -265,7 +267,7 @@ impl AgentInput {
         match self {
             AgentInput::Tui(s) => Some(s),
             AgentInput::Gateway { content, .. } => Some(content),
-            AgentInput::Reset | AgentInput::Compress | AgentInput::SetModel(_) => None,
+            AgentInput::Reset | AgentInput::Compress | AgentInput::SetModel(_) | AgentInput::SetProvider(_) => None,
         }
     }
 
@@ -273,7 +275,7 @@ impl AgentInput {
         match self {
             AgentInput::Tui(_) => "tui",
             AgentInput::Gateway { source, .. } => source.as_str(),
-            AgentInput::Reset | AgentInput::Compress | AgentInput::SetModel(_) => "system",
+            AgentInput::Reset | AgentInput::Compress | AgentInput::SetModel(_) | AgentInput::SetProvider(_) => "system",
         }
     }
 }
@@ -465,6 +467,17 @@ impl Agent {
             self.llm.lock().await.set_model(model.clone());
             return Ok(AgentOutput {
                 content: format!("Model switched to '{}'.", model),
+                token_usage: TokenUsage::default(),
+                tool_results: Vec::new(),
+                tags: vec![],
+            });
+        }
+
+        // Handle provider switch.
+        if let AgentInput::SetProvider(provider) = input {
+            tracing::info!(provider = %provider, "provider switched");
+            return Ok(AgentOutput {
+                content: format!("Provider switched to '{}'.", provider),
                 token_usage: TokenUsage::default(),
                 tool_results: Vec::new(),
                 tags: vec![],
