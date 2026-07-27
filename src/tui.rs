@@ -10,10 +10,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
-use rustyline::config::Configurer;
-
-use rustyline::history::DefaultHistory;
-use rustyline::{CompletionType, Config as RlConfig, Editor};
 use tokio::sync::mpsc;
 use std::sync::Mutex;
 
@@ -69,6 +65,8 @@ struct SharedState {
     provider: String,
     memory_status: String,
     interrupted: bool,
+    /// Text the user is currently typing (not yet submitted).
+    pending_input: String,
 }
 
 impl SharedState {
@@ -84,6 +82,7 @@ impl SharedState {
             provider,
             memory_status: "ready".into(),
             interrupted: false,
+            pending_input: String::new(),
         }
     }
 }
@@ -96,7 +95,6 @@ pub struct TuiApp {
     state: Arc<Mutex<SharedState>>,
     input_tx: mpsc::UnboundedSender<AgentInput>,
     agent_shutdown: mpsc::UnboundedSender<()>,
-    editor: Editor<(), DefaultHistory>,
     current_model: String,
     config: Config,
     memory: MemoryIntegration,
@@ -156,21 +154,10 @@ impl TuiApp {
             }
         });
 
-        let rl_config = RlConfig::builder()
-            .max_history_size(500)
-            .map_err(|e| format!("rustyline config failed: {e}"))?
-            .completion_type(CompletionType::List)
-            .build();
-
-        let mut editor = Editor::<(), DefaultHistory>::with_config(rl_config)
-            .map_err(|e| format!("rustyline init failed: {e}"))?;
-        editor.set_keyseq_timeout(Some(200));
-
         Ok(Self {
             state: shared_state,
             input_tx,
             agent_shutdown: shutdown_tx,
-            editor,
             current_model: model,
             config,
             memory: tui_memory,
@@ -405,20 +392,23 @@ impl TuiApp {
         }
 
         loop {
+            // Render the UI every frame.
             terminal
                 .draw(|frame| self.render(frame))
                 .map_err(|e| format!("render error: {e}"))?;
 
-            if event::poll(Duration::from_millis(100))
+            // Poll for events with a short timeout to keep rendering responsive.
+            if !event::poll(Duration::from_millis(100))
                 .map_err(|e| format!("poll error: {e}"))?
             {
-                if let Event::Key(key) =
-                    event::read().map_err(|e| format!("event read error: {e}"))?
-                {
-                    if key.kind != KeyEventKind::Press {
-                        continue;
-                    }
+                continue;
+            }
 
+            let evt = event::read().map_err(|e| format!("event read error: {e}"))?;
+
+            match evt {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Ctrl+C interrupts or exits.
                     if key.code == crossterm::event::KeyCode::Char('c')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                     {
@@ -426,55 +416,60 @@ impl TuiApp {
                         if st.is_processing {
                             st.interrupted = true;
                             st.is_processing = false;
-                            st.history
-                                .push(TuiMessage::System("[Interrupted]".into()));
+                            st.history.push(TuiMessage::System("[Interrupted]".into()));
                         } else {
-                            tracing::info!("exit requested");
+                            tracing::info!("exit requested via Ctrl+C");
                             break;
                         }
                         continue;
                     }
 
+                    // Ctrl+D exits.
                     if key.code == crossterm::event::KeyCode::Char('d')
                         && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                     {
-                        tracing::info!("exit requested");
+                        tracing::info!("exit requested via Ctrl+D");
                         break;
                     }
-                }
-            }
 
-            match self.editor.readline("> ") {
-                Ok(line) => {
-                    let trimmed = line.trim().to_string();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
+                    let mut st = self.state.lock().expect("mutex poisoned");
 
-                    let _ = self.editor.add_history_entry(line.as_str());
+                    match key.code {
+                        crossterm::event::KeyCode::Enter => {
+                            let input = st.pending_input.clone();
+                            st.pending_input.clear();
 
-                    if trimmed.starts_with('/') {
-                        if let Some(msg) = self.handle_slash_command(&trimmed).await {
-                            self.state.lock().expect("mutex poisoned").history.push(msg);
+                            if !input.trim().is_empty() {
+                                drop(st);
+                                self.submit_input(input).await;
+                            }
                         }
-                        continue;
-                    }
 
-                    {
-                        let mut st = self.state.lock().expect("mutex poisoned");
-                        st.is_processing = true;
-                        st.tool_outputs.clear();
-                        st.history.push(TuiMessage::UserInput(trimmed.clone()));
-                    }
+                        crossterm::event::KeyCode::Backspace => {
+                            st.pending_input.pop();
+                        }
 
-                    if self.input_tx.send(AgentInput::Tui(trimmed)).is_err() {
-                        return Err("agent channel closed".into());
+                        crossterm::event::KeyCode::Char(c) => {
+                            // Handle tab completion for slash commands.
+                            if c == '\t' && st.pending_input.starts_with('/') {
+                                let prefix = &st.pending_input;
+                                if let Some(completion) = Self::complete_slash(prefix) {
+                                    st.pending_input = completion;
+                                }
+                            } else {
+                                st.pending_input.push(c);
+                            }
+                        }
+
+                        _ => {}
                     }
                 }
-                Err(_) => {
-                    tracing::info!("readline error");
-                    break;
+
+                Event::Resize(_, _) => {
+                    // Terminal resized - next draw will use new size.
                 }
+
+                _ => {}
             }
         }
 
@@ -482,6 +477,59 @@ impl TuiApp {
         self.agent_shutdown.send(()).ok();
 
         Ok(())
+    }
+
+    /// Complete a partial slash command to the best match.
+    fn complete_slash(prefix: &str) -> Option<String> {
+        let matches: Vec<&str> = SLASH_COMMANDS.iter()
+            .filter(|cmd| cmd.starts_with(prefix))
+            .copied()
+            .collect();
+
+        if matches.len() == 1 {
+            Some(matches[0].to_string())
+        } else if matches.is_empty() {
+            None
+        } else {
+            // Multiple matches - find the longest common prefix.
+            let common: String = matches.iter()
+                .fold(prefix.to_string(), |acc, s| {
+                    let common_len = acc.chars().zip(s.chars())
+                        .take_while(|(a, b)| a == b)
+                        .count();
+                    acc[..common_len.min(acc.len())].to_string()
+                });
+            if common.len() > prefix.len() {
+                Some(common)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Submit user input to the agent.
+    async fn submit_input(&mut self, input: String) {
+        let trimmed = input.trim().to_string();
+
+        if trimmed.starts_with('/') {
+            if let Some(msg) = self.handle_slash_command(&trimmed).await {
+                self.state.lock().expect("mutex poisoned").history.push(msg);
+            }
+            return;
+        }
+
+        {
+            let mut st = self.state.lock().expect("mutex poisoned");
+            st.is_processing = true;
+            st.tool_outputs.clear();
+            st.history.push(TuiMessage::UserInput(trimmed.clone()));
+        }
+
+        if self.input_tx.send(AgentInput::Tui(trimmed)).is_err() {
+            let mut st = self.state.lock().expect("mutex poisoned");
+            st.is_processing = false;
+            st.history.push(TuiMessage::System("Agent channel closed.".into()));
+        }
     }
 
     fn init_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
@@ -500,8 +548,14 @@ impl TuiApp {
         let st = self.state.lock().expect("mutex poisoned");
         let chunks = Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(3)].as_ref())
+            .constraints([Constraint::Min(1), Constraint::Length(2)].as_ref())
             .split(frame.size());
+
+        // Split bottom area into status + input.
+        let bottom_chunks = Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
+            .split(chunks[1]);
 
         let mut lines: Vec<Line> = Vec::new();
 
@@ -561,12 +615,30 @@ impl TuiApp {
             st.total_prompt_tokens,
             st.total_completion_tokens,
         );
+
+        // Input line with prompt and pending text.
+        let input_prefix = if st.is_processing {
+            String::from("... ")
+        } else {
+            String::from("> ")
+        };
+        let input_line = format!("{}{}", input_prefix, st.pending_input);
         let status_bar = Paragraph::new(Line::from(Span::styled(
             status,
             Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD),
-        )))
-        .block(Block::default().borders(Borders::ALL));
+        )));
 
-        frame.render_widget(status_bar, chunks[1]);
+        frame.render_widget(status_bar, bottom_chunks[0]);
+
+        // Render input line.
+        let input_para = Paragraph::new(Line::from(vec![
+            Span::styled(
+                input_prefix,
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(st.pending_input.clone()),
+        ]));
+
+        frame.render_widget(input_para, bottom_chunks[1]);
     }
 }

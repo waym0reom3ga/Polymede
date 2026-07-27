@@ -124,8 +124,10 @@ async fn load_config_or_default() -> Option<Config> {
 
 fn init_logging(level: &str) {
     let default_level = if level.is_empty() { "info" } else { level };
+    // Write tracing to stderr so it doesn't corrupt the TUI on stdout.
     let _ = tracing_subscriber::fmt::Subscriber::builder()
         .with_max_level(parse_tracing_level(default_level))
+        .with_writer(std::io::stderr)
         .try_init();
 }
 
