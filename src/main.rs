@@ -178,25 +178,22 @@ async fn run_setup_wizard(
     println!("=== Polymede Setup ===\n");
 
     // Step 1: Provider type
-    let current_provider = cfg.llm.provider.as_str();
-    println!("Connection type:");
-    println!("  1. local   - Local server (LM Studio, Ollama, etc.)");
-    println!("  2. custom   - Custom remote endpoint\n");
-    print!("Provider [{}]: ", current_provider);
+    let default_provider = "custom";
+    println!("Supported providers: local, custom, openrouter, lmstudio, ollama, anthropic");
+    print!("Provider [{}]: ", default_provider);
     std::io::stdout().flush().ok();
     let line = read_line()?;
     let choice = line.trim();
     if !choice.is_empty() {
-        match choice {
-            "1" | "local" => cfg.llm.provider = "local".into(),
-            "2" | "custom" => cfg.llm.provider = "custom".into(),
-            other => cfg.llm.provider = other.to_string(),
-        }
+        cfg.llm.provider = choice.to_string();
+    } else {
+        cfg.llm.provider = default_provider.into();
     }
+    println!("{} selected", cfg.llm.provider);
 
     // Step 2: Base URL
-    let current_url = cfg.llm.base_url.as_deref().unwrap_or("(none)");
-    print!("Server address [{}]: ", current_url);
+    let current_url = cfg.llm.base_url.as_deref().unwrap_or("http://localhost:1234/v1");
+    print!("Server address [({})]: ", current_url);
     std::io::stdout().flush().ok();
     let line = read_line()?;
     if !line.is_empty() {
