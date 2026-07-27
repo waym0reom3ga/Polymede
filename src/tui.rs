@@ -648,18 +648,21 @@ impl TuiApp {
                 .collect();
 
             if !matches.is_empty() {
-                // Find longest common prefix of all matches.
-                let suggestion: String = matches.iter()
-                    .fold(typed.clone(), |acc, s| {
-                        let common_len = acc.chars().zip(s.chars())
-                            .take_while(|(a, b)| a == b)
-                            .count();
-                        acc[..common_len.min(acc.len())].to_string()
-                    });
-
-                if suggestion.len() > typed.len() {
+                if matches.len() == 1 {
+                    // Single match -- show the rest dimmed.
+                    let rest = &matches[0][typed.len()..];
                     spans.push(Span::styled(
-                        suggestion[typed.len()..].to_string(),
+                        rest.to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                } else {
+                    // Multiple matches -- list them all in brackets.
+                    let list: String = matches.iter()
+                        .map(|m| m.strip_prefix(&typed).unwrap_or(m))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    spans.push(Span::styled(
+                        format!(" [{}]", list),
                         Style::default().fg(Color::DarkGray),
                     ));
                 }
