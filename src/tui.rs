@@ -343,6 +343,11 @@ impl TuiApp {
                     }
                 }
             }
+            "/" => {
+                Some(TuiMessage::System(
+                    "Commands: /new (reset), /stop, /usage, /model [name], /skills, /compress, /clear_cache, /insights".into(),
+                ))
+            }
             _ => {
                 Some(TuiMessage::System(format!(
                     "Unknown command: {cmd}. Available: /new /reset /model /skills /compress /usage /insights /stop"
