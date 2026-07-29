@@ -454,16 +454,18 @@ impl TuiApp {
                             st.pending_input.pop();
                         }
 
-                        crossterm::event::KeyCode::Char(c) => {
-                            // Handle tab completion for slash commands.
-                            if c == '\t' && st.pending_input.starts_with('/') {
+                        crossterm::event::KeyCode::Tab => {
+                            // Tab completion for slash commands.
+                            if st.pending_input.starts_with('/') {
                                 let prefix = &st.pending_input;
                                 if let Some(completion) = Self::complete_slash(prefix) {
                                     st.pending_input = completion;
                                 }
-                            } else {
-                                st.pending_input.push(c);
                             }
+                        }
+
+                        crossterm::event::KeyCode::Char(c) => {
+                            st.pending_input.push(c);
                         }
 
                         _ => {}
