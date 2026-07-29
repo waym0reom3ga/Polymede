@@ -283,10 +283,64 @@ impl TuiApp {
                         Some(TuiMessage::System(format!("Switching model to '{}'.", m)))
                     }
                     _ => {
-                        Some(TuiMessage::System(format!(
-                            "Current model: {} (provider: {})",
-                            st.model, st.provider
-                        )))
+                        // No arg: fetch and list available models from server.
+                        drop(st);
+                        let base_url = self.config.llm.base_url.clone().unwrap_or_default();
+                        let api_key = self.config.effective_api_key();
+
+                        if base_url.is_empty() {
+                            return Some(TuiMessage::System(
+                                "No server configured. Run 'polymede setup' first.".into(),
+                            ));
+                        }
+
+                        // Fetch models in background and report result.
+                        let url = format!("{}/models", base_url.trim_end_matches('/'));
+                        let display_url = base_url.clone();
+                        let key = api_key.clone();
+                        let fetch_task = tokio::spawn(async move {
+                            let mut builder = reqwest::Client::new().get(&url);
+                            if let Some(k) = key.filter(|s| !s.is_empty()) {
+                                builder = builder.header("Authorization", format!("Bearer {}", k));
+                            }
+                            match builder.send().await {
+                                Ok(resp) if resp.status().is_success() => {
+                                    match resp.text().await {
+                                        Ok(body) => {
+                                            let data: serde_json::Value = match serde_json::from_str(&body) {
+                                                Ok(v) => v,
+                                                Err(e) => return format!("Failed to parse response: {}", e),
+                                            };
+                                            if let Some(arr) = data.get("data").and_then(|d| d.as_array()) {
+                                                let models: Vec<String> = arr.iter()
+                                                    .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
+                                                    .collect();
+                                                if models.is_empty() {
+                                                    return "No models found.".to_string();
+                                                }
+                                                let mut msg = format!("Available models (use /model <name> to switch):\n");
+                                                for (i, m) in models.iter().enumerate() {
+                                                    msg.push_str(&format!("  {}. {}\n", i + 1, m));
+                                                }
+                                                return msg.trim_end().to_string();
+                                            }
+                                            "Unexpected response format.".into()
+                                        }
+                                        Err(e) => format!("Failed to read response: {}", e),
+                                    }
+                                }
+                                Ok(resp) => format!("Server returned HTTP {}", resp.status()),
+                                Err(e) => format!("Could not reach server at {}: {}", base_url, e),
+                            }
+                        });
+
+                        // Wait up to 5 seconds for the fetch.
+                        match tokio::time::timeout(std::time::Duration::from_secs(5), fetch_task).await {
+                            Ok(Ok(msg)) => Some(TuiMessage::System(msg)),
+                            _ => Some(TuiMessage::System(format!(
+                                "Timed out fetching models from {}", display_url
+                            ))),
+                        }
                     }
                 }
             }
@@ -454,11 +508,11 @@ impl TuiApp {
                             st.pending_input.pop();
                         }
 
-                        crossterm::event::KeyCode::Tab => {
+                        crossterm::event::KeyCode::Tab | crossterm::event::KeyCode::Char('\t') => {
                             // Tab completion for slash commands.
                             if st.pending_input.starts_with('/') {
-                                let prefix = &st.pending_input;
-                                if let Some(completion) = Self::complete_slash(prefix) {
+                                let prefix = st.pending_input.clone();
+                                if let Some(completion) = Self::complete_slash(&prefix) {
                                     st.pending_input = completion;
                                 }
                             }

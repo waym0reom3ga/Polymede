@@ -144,7 +144,9 @@ impl Config {
 
     /// Effective API key (env var takes precedence over file).
     pub fn effective_api_key(&self) -> Option<String> {
-        std::env::var(ENV_API_KEY).ok().or_else(|| self.llm.api_key.clone())
+        std::env::var(ENV_API_KEY).ok()
+            .or_else(|| self.llm.api_key.clone())
+            .filter(|k| !k.is_empty())
     }
 
     /// Check that the config has the minimum required fields.
