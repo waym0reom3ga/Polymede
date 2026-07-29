@@ -27,7 +27,7 @@ tonic = "0.12"
 prost = "0.13"
 
 # LLM clients (custom, provider-agnostic)
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "gzip"] }
 url = "2"
 
 # Logging

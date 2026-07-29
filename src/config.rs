@@ -187,10 +187,10 @@ impl Config {
     fn default_config() -> Self {
         Config {
             llm: LlmConfig {
-                provider: "openrouter".into(),
-                model: "anthropic/claude-sonnet-4-20250514".into(),
+                provider: "local".into(),
+                model: "".into(),
                 api_key: None,
-                base_url: None,
+                base_url: Some("http://localhost:8080/v1".into()),
                 fallback: Some(Box::new(LlmConfig {
                     provider: "lmstudio".into(),
                     model: "qwen3-27b".into(),
