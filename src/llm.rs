@@ -211,7 +211,7 @@ impl LlmClient {
         messages: &[Message],
         tools: &Option<Vec<ToolDefinition>>,
     ) -> Result<ChatResponse, LlmError> {
-        let api_key = self.effective_key(config)?;
+        let api_key = self.effective_key(config);
         let (base_url, is_anthropic) = self.resolve_endpoint(config)?;
         let mut last_error = None;
 
@@ -223,7 +223,7 @@ impl LlmClient {
             }
 
             let body = if is_anthropic {
-                self.build_anthropic_body(config, messages, tools, &api_key)?
+                self.build_anthropic_body(config, messages, tools, api_key.as_deref())?
             } else {
                 self.build_openai_body(config, messages, tools)?
             };
@@ -231,14 +231,17 @@ impl LlmClient {
             let url = format!("{base_url}/chat/completions");
             tracing::debug!(url, model = %config.model, body = %serde_json::to_string(&body).unwrap_or_default(), "request");
 
-            let resp = self
+            let mut req_builder = self
                 .http
                 .post(&url)
                 .header("Content-Type", "application/json")
-                .header("Authorization", format!("Bearer {}", api_key))
-                .json(&body)
-                .send()
-                .await;
+                .json(&body);
+
+            if let Some(ref key) = api_key {
+                req_builder = req_builder.header("Authorization", format!("Bearer {}", key));
+            }
+
+            let resp = req_builder.send().await;
 
             match resp {
                 Ok(response) => {
@@ -283,11 +286,11 @@ impl LlmClient {
         tools: &Option<Vec<ToolDefinition>>,
         chunk_tx: Option<&mpsc::UnboundedSender<String>>,
     ) -> Result<StreamResult, LlmError> {
-        let api_key = self.effective_key(config)?;
+        let api_key = self.effective_key(config);
         let (base_url, is_anthropic) = self.resolve_endpoint(config)?;
 
         let body = if is_anthropic {
-            self.build_anthropic_stream_body(config, messages, tools, &api_key)?
+            self.build_anthropic_stream_body(config, messages, tools, api_key.as_deref())?
         } else {
             self.build_openai_stream_body(config, messages, tools)?
         };
@@ -295,14 +298,17 @@ impl LlmClient {
         let url = format!("{base_url}/chat/completions");
         tracing::debug!(url, model = %config.model, "stream request");
 
-        let response = self
+        let mut req_builder = self
             .http
             .post(&url)
             .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .json(&body)
-            .send()
-            .await?;
+            .json(&body);
+
+        if let Some(ref key) = api_key {
+            req_builder = req_builder.header("Authorization", format!("Bearer {}", key));
+        }
+
+        let response = req_builder.send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -458,11 +464,11 @@ impl LlmClient {
         Ok((base_url, is_anthropic))
     }
 
-    fn effective_key(&self, config: &LlmConfig) -> Result<String, LlmError> {
+    fn effective_key(&self, config: &LlmConfig) -> Option<String> {
         std::env::var("POLYMDE_LLM_API_KEY")
             .ok()
             .or_else(|| config.api_key.clone())
-            .ok_or(LlmError::NoApiKey)
+            .filter(|k| !k.is_empty())
     }
 
     // -- Request body builders (OpenAI format) --------------------------------
@@ -544,7 +550,7 @@ impl LlmClient {
         config: &LlmConfig,
         messages: &[Message],
         tools: &Option<Vec<ToolDefinition>>,
-        _api_key: &str,
+        _api_key: Option<&str>,
     ) -> Result<serde_json::Value, LlmError> {
         let mut body = serde_json::Map::new();
         body.insert("model".into(), serde_json::Value::String(config.model.clone()));
@@ -651,7 +657,7 @@ impl LlmClient {
         config: &LlmConfig,
         messages: &[Message],
         tools: &Option<Vec<ToolDefinition>>,
-        api_key: &str,
+        api_key: Option<&str>,
     ) -> Result<serde_json::Value, LlmError> {
         let mut body = self.build_anthropic_body(config, messages, tools, api_key)?;
         if let Some(obj) = body.as_object_mut() {

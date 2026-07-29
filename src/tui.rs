@@ -274,6 +274,11 @@ impl TuiApp {
                     Some(m) if !m.is_empty() => {
                         drop(st);
                         self.current_model = m.to_string();
+                        // Update status bar model display.
+                        {
+                            let mut st = self.state.lock().expect("mutex poisoned");
+                            st.model = m.to_string();
+                        }
                         let _ = self.input_tx.send(AgentInput::SetModel(m.to_string()));
                         Some(TuiMessage::System(format!("Switching model to '{}'.", m)))
                     }
