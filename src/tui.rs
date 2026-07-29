@@ -484,7 +484,7 @@ impl TuiApp {
         Ok(())
     }
 
-    /// Complete a partial slash command to the best match.
+    /// Complete a partial slash command.
     fn complete_slash(prefix: &str) -> Option<String> {
         let matches: Vec<&str> = SLASH_COMMANDS.iter()
             .filter(|cmd| cmd.starts_with(prefix))
@@ -493,19 +493,21 @@ impl TuiApp {
 
         if matches.len() == 1 {
             Some(matches[0].to_string())
-        } else if matches.is_empty() {
-            None
         } else {
-            // Multiple matches - find the longest common prefix.
-            let common: String = matches.iter()
-                .fold(prefix.to_string(), |acc, s| {
-                    let common_len = acc.chars().zip(s.chars())
-                        .take_while(|(a, b)| a == b)
-                        .count();
-                    acc[..common_len.min(acc.len())].to_string()
-                });
-            if common.len() > prefix.len() {
-                Some(common)
+            // Multiple or no matches: find longest common prefix that extends beyond input.
+            let first = matches.first()?;
+            let mut common_len = prefix.len();
+            for ch in first[prefix.len()..].chars() {
+                if matches[1..].iter().all(|s| {
+                    s.chars().nth(prefix.len() + (common_len - prefix.len())) == Some(ch)
+                }) {
+                    common_len += ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            if common_len > prefix.len() {
+                Some(first[..common_len].to_string())
             } else {
                 None
             }

@@ -196,21 +196,29 @@ async fn run_setup_wizard(
     print!("Server address [({})]: ", current_url);
     std::io::stdout().flush().ok();
     let line = read_line()?;
-    if !line.is_empty() {
-        cfg.llm.base_url = Some(line.trim().to_string());
+    let trimmed = line.trim();
+    if !trimmed.is_empty() {
+        cfg.llm.base_url = Some(trimmed.to_string());
+    } else {
+        // Pressing Enter keeps current value explicitly.
+        cfg.llm.base_url = Some(current_url.to_string());
     }
 
     // Step 3: API key
     let current_key_display = match &cfg.llm.api_key {
-        Some(k) if k.len() > 8 => format!("{}****", &k[..4]),
-        Some(_) => "set".into(),
-        None => "not set".into(),
+        Some(k) if !k.is_empty() && k.len() > 8 => format!("{}****", &k[..4]),
+        Some(k) if !k.is_empty() => "set".into(),
+        _ => "not set".into(),
     };
     print!("API key (leave empty to skip, current: {}): ", current_key_display);
     std::io::stdout().flush().ok();
     let line = read_line()?;
-    if !line.is_empty() {
-        cfg.llm.api_key = Some(line.trim().to_string());
+    let trimmed = line.trim();
+    if !trimmed.is_empty() {
+        cfg.llm.api_key = Some(trimmed.to_string());
+    } else {
+        // Pressing Enter clears the key (user can re-enter if needed).
+        cfg.llm.api_key = None;
     }
 
     // Step 4: Fetch models from server and let user pick
@@ -219,10 +227,10 @@ async fn run_setup_wizard(
 
     if !base_url.is_empty() {
         println!("\nFetching available models...");
-        // Use key if provided, otherwise try without auth (common for local servers)
+        // Use key if provided and non-empty, otherwise try without auth (common for local servers)
         let models_result = match &api_key {
-            Some(key) => fetch_models(base_url, Some(key)).await,
-            None => fetch_models(base_url, None).await,
+            Some(key) if !key.is_empty() => fetch_models(base_url, Some(key)).await,
+            _ => fetch_models(base_url, None).await,
         };
         match models_result {
             Ok(model_list) if !model_list.is_empty() => {
