@@ -85,7 +85,7 @@ impl SharedState {
             memory_status: "ready".into(),
             interrupted: false,
             pending_input: String::new(),
-            scroll_offset: 0,
+            scroll_offset: u16::MAX, // u16::MAX = at bottom (ratatui clamps to max valid)
         }
     }
 }
@@ -190,7 +190,7 @@ impl TuiApp {
                     st.current_response = String::new();
                     st.is_processing = false;
                     st.interrupted = false;
-                    st.scroll_offset = 0; // auto-scroll to bottom on new response
+                    st.scroll_offset = u16::MAX; // auto-scroll to bottom on new response
                 }
                 None => {
                     tracing::info!("output channel closed");
@@ -209,7 +209,7 @@ impl TuiApp {
                 Some(chunk) => {
                     let mut st = state.lock().expect("mutex poisoned");
                     st.current_response.push_str(&chunk);
-                    st.scroll_offset = 0; // auto-scroll while streaming
+                    st.scroll_offset = u16::MAX; // auto-scroll to bottom while streaming
                 }
                 None => break,
             }
@@ -527,18 +527,18 @@ impl TuiApp {
                             st.pending_input.push(c);
                         }
 
-                        // Scroll up (PageUp, ArrowUp).
+                        // Scroll up (PageUp, ArrowUp) — decrement scroll_offset.
                         crossterm::event::KeyCode::PageUp
                         | crossterm::event::KeyCode::Up => {
-                            st.scroll_offset = st.scroll_offset.saturating_add(3);
-                        }
-
-                        // Scroll down (PageDown, ArrowDown).
-                        crossterm::event::KeyCode::PageDown | crossterm::event::KeyCode::Down => {
                             st.scroll_offset = st.scroll_offset.saturating_sub(3);
                         }
 
-                        // Home/End for quick scroll.
+                        // Scroll down (PageDown, ArrowDown) — increment scroll_offset.
+                        crossterm::event::KeyCode::PageDown | crossterm::event::KeyCode::Down => {
+                            st.scroll_offset = st.scroll_offset.saturating_add(3);
+                        }
+
+                        // Home = jump to top, End = jump to bottom.
                         crossterm::event::KeyCode::Home => {
                             st.scroll_offset = 0;
                         }
@@ -688,22 +688,13 @@ impl TuiApp {
             }
         }
 
-        // Compute actual scroll position: distance-from-bottom -> absolute Y from top.
-        let total_lines = lines.len() as u16;
-        let chat_height = chunks[0].height.saturating_sub(2); // borders take 2 rows
-        let scroll_y = if st.scroll_offset == 0 {
-            // Auto-scroll to bottom: show last `chat_height` lines.
-            total_lines.saturating_sub(chat_height)
-        } else {
-            // User scrolled up: offset is distance from bottom.
-            total_lines.saturating_sub(st.scroll_offset).saturating_sub(chat_height)
-        };
-
+        // Scroll: 0 means at bottom (auto-scroll), >0 means user scrolled up.
+        // Ratatui .scroll() takes absolute Y from top; it handles wrapping internally.
         let paragraph = Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title(" Chat "))
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(Color::White))
-            .scroll((scroll_y, 0));
+            .scroll((st.scroll_offset, 0));
 
         frame.render_widget(paragraph, chunks[0]);
 
