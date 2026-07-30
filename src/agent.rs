@@ -513,12 +513,28 @@ impl Agent {
 
         // Step 5: Send to LLM with tool definitions.
         let mut ctx = self.context.write().await;
-        ctx.add_message(Message {
-            role: MessageRole::System,
-            content: system_prompt,
-            tool_calls: None,
-            tool_call_id: None,
-        });
+
+        // Update or insert the system prompt (first message), don't append a new one each turn.
+        if !ctx.messages.is_empty() && matches!(ctx.messages[0].role, MessageRole::System) {
+            ctx.tokens_used = ctx.tokens_used.saturating_sub(estimate_message_tokens(&ctx.messages[0]));
+            ctx.messages[0] = Message {
+                role: MessageRole::System,
+                content: system_prompt.clone(),
+                tool_calls: None,
+                tool_call_id: None,
+            };
+            ctx.tokens_used += estimate_message_tokens(&ctx.messages[0]);
+        } else if ctx.messages.is_empty() || !matches!(ctx.messages[0].role, MessageRole::System) {
+            // First turn or no system message yet — insert at front.
+            let sys_msg = Message {
+                role: MessageRole::System,
+                content: system_prompt.clone(),
+                tool_calls: None,
+                tool_call_id: None,
+            };
+            ctx.tokens_used += estimate_message_tokens(&sys_msg);
+            ctx.messages.insert(0, sys_msg);
+        }
 
         ctx.add_message(Message {
             role: MessageRole::User,
