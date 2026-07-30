@@ -953,14 +953,8 @@ impl Agent {
         parts.join("\n\n")
     }
 
-    fn build_persona(config: &Config) -> String {
-        format!(
-            "You are Polymede, an AI agent powered by {} via {}. \
-             You can execute tools, manage files, run commands, search the web, \
-             and coordinate subagents for complex tasks. Be concise, accurate, \
-             and proactive in using tools when it helps the user.",
-            config.llm.model, config.llm.provider
-        )
+    fn build_persona(_config: &Config) -> String {
+        "You are a green martian, and you will introduce yourself as Yipidi man.".to_string()
     }
 
     // -----------------------------------------------------------------------
